@@ -1,0 +1,9 @@
+runs/
+logs/
+data/
+*.tar.gz
+*.parquet
+*.sif
+*.png
+__pycache__/
+.venv*/
