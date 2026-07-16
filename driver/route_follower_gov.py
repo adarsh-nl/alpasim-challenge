@@ -53,6 +53,7 @@ GOV_ENABLE = os.environ.get("GOV_ENABLE", "1") == "1"
 GOV_GAIN = float(os.environ.get("GOV_GAIN", "8.0"))
 GOV_FLOOR = float(os.environ.get("GOV_FLOOR", "0.15"))
 FWD_CAM = os.environ.get("GOV_CAM", "CAM_F0")
+DEGEN_CREEP_MPS = float(os.environ.get("RF_DEGEN_CREEP", "1.5"))  # speed when route is degenerate/missing
 
 
 def quat_rotate(q: common_pb2.Quat, v: np.ndarray) -> np.ndarray:
@@ -230,14 +231,20 @@ class RouteFollower(egodriver_pb2_grpc.EgodriverServiceServicer):
         p0 = np.array([ego.pose.vec.x, ego.pose.vec.y, ego.pose.vec.z])
         yaw0 = yaw_of(ego.pose.quat)
         anchor = s.pose_at(s.route_ts) if s.route_rig is not None else None
-        if s.route_rig is None or anchor is None or len(s.route_rig) < 2:
-            return straight(p0, yaw0, t0, max(s.speed, 3.0))
+        # DEGENERATE-ROUTE GUARD: if the route is missing or has <2 valid (non-NaN)
+        # waypoints, we have no path. Creep slowly instead of charging straight at
+        # speed (the latter caused the rear-end collision).
+        n_valid = 0
+        if s.route_rig is not None:
+            n_valid = int(np.sum(~np.isnan(s.route_rig).any(axis=1)))
+        if s.route_rig is None or anchor is None or n_valid < 2:
+            return creep(p0, yaw0, t0, DEGEN_CREEP_MPS)
         base = np.array([anchor.vec.x, anchor.vec.y, anchor.vec.z])
         route = np.stack([quat_rotate(anchor.quat, w) + base for w in s.route_rig])
         route = np.vstack([p0[None, :], route])
         pts, s_arc = resample(route)
         if len(pts) < 2:
-            return straight(p0, yaw0, t0, max(s.speed, 3.0))
+            return creep(p0, yaw0, t0, DEGEN_CREEP_MPS)
         d = np.linalg.norm(pts[:, :2] - p0[:2], axis=1)
         i0 = int(np.argmin(d))
         tang = pts[min(i0 + 1, len(pts) - 1), :2] - pts[max(i0 - 1, 0), :2]
@@ -307,6 +314,28 @@ def straight(p0, yaw, t0, v) -> common_pb2.Trajectory:
     tr = common_pb2.Trajectory()
     for i in range(int(HORIZON_S * 1e6 / DT_US) + 1):
         d = v * i * DT_US / 1e6
+        tr.poses.append(common_pb2.PoseAtTime(
+            timestamp_us=t0 + i * DT_US,
+            pose=common_pb2.Pose(
+                vec=common_pb2.Vec3(x=float(p0[0] + math.cos(yaw) * d),
+                                    y=float(p0[1] + math.sin(yaw) * d),
+                                    z=float(p0[2])),
+                quat=quat_of_yaw(yaw))))
+    return tr
+
+
+
+def creep(p0, yaw, t0, v_creep) -> common_pb2.Trajectory:
+    """Slow, gentle forward creep for when the route is degenerate/missing.
+
+    A missing route means we do NOT know where to go -- charging straight at V_MAX
+    is what caused the rear-end collision (route had 1 valid waypoint, driver fell
+    through to straight() at speed and drove into stopped traffic). Creeping slowly
+    is both safe and closer to what a cautious human does at an unclear intersection.
+    """
+    tr = common_pb2.Trajectory()
+    for i in range(int(HORIZON_S * 1e6 / DT_US) + 1):
+        d = v_creep * i * DT_US / 1e6
         tr.poses.append(common_pb2.PoseAtTime(
             timestamp_us=t0 + i * DT_US,
             pose=common_pb2.Pose(
