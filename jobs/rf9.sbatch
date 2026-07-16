@@ -11,7 +11,7 @@ set -euo pipefail
 hostname; nvidia-smi --query-gpu=name --format=csv,noheader
 
 export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH
-export ALPASIM_NUPLAN_ROOT=/home/nanjaiyalathaa/data/alpasim-nuplan
+export ALPASIM_NUPLAN_ROOT=/datasets/eemcs/ps/alpasim-nuplan-2026
 export HF_HOME=/home/nanjaiyalathaa/data/hf-cache
 export LC_ALL=C.UTF-8
 export UV_LINK_MODE=copy
