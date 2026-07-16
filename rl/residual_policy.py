@@ -23,9 +23,13 @@ Inputs (all legitimate inference inputs -- no GT, no privileged state):
   - ego:   [speed, recent_ax, recent_ay] or similar small vector
 """
 from __future__ import annotations
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+_LOG_STD_INIT = float(os.environ.get('RL_LOG_STD_INIT', '-0.5'))  # exploration width
+_MEAN_BIAS = float(os.environ.get('RL_MEAN_BIAS', '2.0'))         # prior speed-mult center
 
 
 class SmallCNN(nn.Module):
@@ -77,13 +81,13 @@ class ResidualSpeedPolicy(nn.Module):
         )
         # actor: mean of pre-squash scalar. log_std is a free parameter (state-independent).
         self.mean_head = nn.Linear(hidden, 1)
-        self.log_std = nn.Parameter(torch.tensor([-0.5]))   # start with moderate exploration
+        self.log_std = nn.Parameter(torch.tensor([_LOG_STD_INIT]))   # exploration width (env)
         # critic
         self.value_head = nn.Linear(hidden, 1)
         # init the mean head so the initial action ~ sigmoid(+2)=0.88 (mostly full speed,
         # i.e. start close to the follower's behavior; learn to slow from there)
         nn.init.zeros_(self.mean_head.weight)
-        nn.init.constant_(self.mean_head.bias, 2.0)
+        nn.init.constant_(self.mean_head.bias, _MEAN_BIAS)
 
     def _encode(self, img: torch.Tensor, route: torch.Tensor, ego: torch.Tensor) -> torch.Tensor:
         zi = self.img_enc(img)
