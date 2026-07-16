@@ -25,7 +25,12 @@ import numpy as np
 import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from residual_policy import ResidualSpeedPolicy
-from reward import RewardWeights, episode_reward, load_rollout_metrics
+import os as _os
+from reward import load_rollout_metrics
+if _os.environ.get("RL_REWARD", "v1") == "v2":
+    from reward_v2 import episode_reward_v2 as episode_reward, RewardV2Weights as RewardWeights
+else:
+    from reward import episode_reward, RewardWeights
 from collect_batch import build_batch
 from ppo_update import ppo_update
 

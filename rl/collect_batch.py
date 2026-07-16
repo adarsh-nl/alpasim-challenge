@@ -20,7 +20,12 @@ from __future__ import annotations
 import glob, os, sys
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from reward import episode_reward, RewardWeights, load_rollout_metrics
+import os as _os
+from reward import load_rollout_metrics
+if _os.environ.get("RL_REWARD", "v1") == "v2":
+    from reward_v2 import episode_reward_v2 as episode_reward, RewardV2Weights as RewardWeights
+else:
+    from reward import episode_reward, RewardWeights
 
 
 def build_batch(run_dir: str, w: RewardWeights) -> dict:
