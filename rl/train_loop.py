@@ -172,8 +172,12 @@ def main():
         pick = list(np.random.choice(scenes_all,
                     size=min(args.episodes_per_iter, len(scenes_all)), replace=False))
         rd = f"{args.work}/iter{it:03d}"
-        run_rollouts(pick, ckpt, rd, deterministic=False, **cfg["sim"])
-        batch, ep_rewards = build_batch(rd, cfg["weights"])
+        try:
+            run_rollouts(pick, ckpt, rd, deterministic=False, **cfg["sim"])
+            batch, ep_rewards = build_batch(rd, cfg["weights"])
+        except Exception as e:
+            print(f"[iter {it:3d}] ROLLOUT/BATCH FAILED ({e}); skipping iteration", flush=True)
+            continue
         stats = ppo_update(policy, batch, lr=args.lr, device=dev)
         torch.save(policy.state_dict(), ckpt)
 
