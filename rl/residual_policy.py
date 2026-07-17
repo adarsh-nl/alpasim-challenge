@@ -111,24 +111,32 @@ class ResidualSpeedPolicy(nn.Module):
         For rollout collection use deterministic=False -> sample for exploration.
         """
         mean, log_std, value = self.forward(img, route, ego)
+        std = log_std.exp()
         if deterministic:
             pre = mean
-            logp = torch.zeros_like(mean.squeeze(-1))
         else:
-            std = log_std.exp()
             eps = torch.randn_like(mean)
             pre = mean + std * eps
-            # log prob of the pre-squash Gaussian sample
-            logp = (-0.5 * ((pre - mean) / std) ** 2 - log_std - 0.5 * torch.log(torch.tensor(2 * torch.pi))).sum(-1)
-        m = torch.sigmoid(pre).squeeze(-1)                # (B,) in (0,1)
-        return m, logp, value
+        # squashed-Gaussian log-prob: Gaussian logp on pre MINUS sigmoid Jacobian
+        gauss_logp = (-0.5 * ((pre - mean) / std) ** 2 - log_std
+                      - 0.5 * torch.log(torch.tensor(2 * torch.pi)))
+        sig = torch.sigmoid(pre)
+        log_jac = torch.log(sig * (1.0 - sig) + 1e-6)     # d m / d pre = sig*(1-sig)
+        logp = (gauss_logp - log_jac).sum(-1)
+        if deterministic:
+            logp = torch.zeros_like(logp)
+        m = sig.squeeze(-1)                                # (B,) in (0,1)
+        return m, logp, value, pre.squeeze(-1)
 
     def evaluate_actions(self, img, route, ego, pre_actions):
         """For PPO update: given stored pre-squash actions, return (logprob, entropy, value)."""
         mean, log_std, value = self.forward(img, route, ego)
         std = log_std.exp()
-        logp = (-0.5 * ((pre_actions - mean) / std) ** 2 - log_std
-                - 0.5 * torch.log(torch.tensor(2 * torch.pi))).sum(-1)
+        gauss_logp = (-0.5 * ((pre_actions - mean) / std) ** 2 - log_std
+                      - 0.5 * torch.log(torch.tensor(2 * torch.pi)))
+        sig = torch.sigmoid(pre_actions)
+        log_jac = torch.log(sig * (1.0 - sig) + 1e-6)
+        logp = (gauss_logp - log_jac).sum(-1)
         entropy = (0.5 + 0.5 * torch.log(torch.tensor(2 * torch.pi)) + log_std).sum(-1)
         return logp, entropy, value
 
@@ -156,7 +164,7 @@ def _smoke() -> None:
     t0 = time.perf_counter()
     N = 50
     for _ in range(N):
-        m, logp, v = net.act(img, route, ego)
+        m, logp, v, _pre = net.act(img, route, ego)
     if dev == "cuda":
         torch.cuda.synchronize()
     dt = (time.perf_counter() - t0) / N
