@@ -28,7 +28,7 @@ N_ROUTE = 10
 
 
 def ppo_update(policy: ResidualSpeedPolicy, batch: dict, *,
-               epochs=4, minibatch=256, clip=0.2, c_value=0.5, c_entropy=0.01,
+               epochs=10, minibatch=64, clip=0.2, c_value=0.5, c_entropy=0.01,
                lr=3e-4, device="cuda", max_grad_norm=0.5) -> dict:
     dev = device
     policy = policy.to(dev).train()
