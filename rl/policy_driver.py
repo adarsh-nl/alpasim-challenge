@@ -236,14 +236,14 @@ class PolicyDriver(egodriver_pb2_grpc.EgodriverServiceServicer):
 
         # === POLICY: speed multiplier from camera ===
         img, route_t, ego_t = self._policy_inputs(s, pts, s_arc, i0, p0)
-        m, logp, val = self.policy.act(img, route_t, ego_t, deterministic=DETERMINISTIC)
+        m, logp, val, pre_sample = self.policy.act(img, route_t, ego_t, deterministic=DETERMINISTIC)
         m_val = float(m.item())
         v_cap = v_cap * m_val                       # the residual: scale planned speed
 
         # log transition
         if LOG_DIR:
-            # recover pre-squash action for PPO (invert sigmoid)
-            pre = math.log(max(min(m_val,1-1e-6),1e-6)/(1-max(min(m_val,1-1e-6),1e-6)))
+            # log the EXACT pre-squash sample (matches the logged logprob)
+            pre = float(pre_sample.item())
             s.log_img.append((s.last_img.numpy()*255).astype(np.uint8) if s.last_img is not None
                              else np.zeros((3,*IMG_HW),np.uint8))
             s.log_route.append(route_t.squeeze(0).cpu().numpy())
