@@ -1,6 +1,6 @@
 runs/
 logs/
-data/
+/data/          # bulk job data at repo root; NOT tests/data (small fixtures)
 *.tar.gz
 *.parquet
 *.sif
