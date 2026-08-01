@@ -387,6 +387,176 @@ def make_rollouts(n: int, n_steps: int = 8) -> list[Rollout]:
 
 
 # ---------------------------------------------------------------------------
+# 6b. REAL replayed streams
+# ---------------------------------------------------------------------------
+# The synthetic profiles above are adversarial by construction, but they are
+# still my model of what the runtime sends. These replay the ACTUAL RPC streams
+# recorded in rollout.asl logs from scored runs -- real nuPlan route geometry,
+# real ego motion, real Drive cadence -- through the same bit-identity check.
+#
+# Build the cache once (SDK env, CPU, no GPU):
+#   ./.venv/bin/python tests/extract_replay_streams.py --out tests/data/replay
+# Tests skip cleanly when it is absent, so the suite stays runnable anywhere.
+
+REPLAY_DIR = REPO / "tests" / "data" / "replay"
+
+
+class ReplayRollout:
+    """A Rollout-compatible wrapper over a recorded RPC stream."""
+
+    def __init__(self, path: Path, uuid_override: str | None = None):
+        import json
+        rec = json.loads(path.read_text())
+        self.path = path
+        self.scene_id = rec.get("scene_id", path.stem)
+        self.uuid = uuid_override or rec.get("session_uuid") or path.stem
+        self.profile = f"replay:{self.scene_id[:24]}"
+        self.seed = int(rec.get("random_seed", 0) or 0)
+        self._events = rec["events"]
+        self._calls = list(self._build())
+
+    def _build(self):
+        yield ("start_session", NS(session_uuid=self.uuid, random_seed=self.seed))
+        for e in self._events:
+            k = e["kind"]
+            if k == "ego":
+                poses = [NS(timestamp_us=int(p["t"]),
+                            pose=NS(vec=vec(*p["vec"]),
+                                    quat=NS(w=p["quat"][0], x=p["quat"][1],
+                                            y=p["quat"][2], z=p["quat"][3])))
+                         for p in e["poses"]]
+                dyn = [NS(linear_velocity=vec(d[0], d[1])) for d in e["dyn"]]
+                yield ("submit_egomotion_observation",
+                       NS(session_uuid=self.uuid,
+                          trajectory=NS(poses=poses), dynamic_states=dyn))
+            elif k == "route":
+                yield ("submit_route",
+                       NS(session_uuid=self.uuid,
+                          route=NS(waypoints=[vec(*w) for w in e["wps"]],
+                                   timestamp_us=int(e["ts"]))))
+            elif k == "drive":
+                yield ("drive", NS(session_uuid=self.uuid,
+                                   time_now_us=int(e["time_now_us"]),
+                                   time_query_us=int(e["time_query_us"])))
+        yield ("close_session", NS(session_uuid=self.uuid))
+
+    def calls(self):
+        return list(self._calls)
+
+
+def load_replay_rollouts(max_n: int = 8) -> list[ReplayRollout]:
+    if not REPLAY_DIR.is_dir():
+        return []
+    out = []
+    for i, p in enumerate(sorted(REPLAY_DIR.glob("*.json"))[:max_n]):
+        # Distinct session ids so several can share one servicer.
+        out.append(ReplayRollout(p, uuid_override=f"replay-{i:02d}"))
+    return out
+
+
+def _require_replays(min_n: int = 2) -> list[ReplayRollout]:
+    rolls = load_replay_rollouts()
+    if len(rolls) < min_n:
+        pytest.skip(
+            f"need >={min_n} replay streams in {REPLAY_DIR}; "
+            f"build with tests/extract_replay_streams.py")
+    return rolls
+
+
+def test_replay_streams_are_real_and_nondegenerate():
+    """Guard the fixture itself: real streams, real routes, real drives."""
+    rolls = _require_replays(2)
+    for r in rolls:
+        calls = r.calls()
+        n_drive = sum(1 for rpc, _ in calls if rpc == "drive")
+        n_route = sum(1 for rpc, _ in calls if rpc == "submit_route")
+        n_ego = sum(1 for rpc, _ in calls if rpc == "submit_egomotion_observation")
+        assert n_drive >= 3, f"{r.scene_id}: only {n_drive} drives"
+        assert n_ego >= 3, f"{r.scene_id}: only {n_ego} egomotion messages"
+        # at least one route with enough waypoints to take the planning branch
+        wp_counts = [len(req.route.waypoints) for rpc, req in calls
+                     if rpc == "submit_route"]
+        assert n_route == 0 or max(wp_counts) >= 2, (
+            f"{r.scene_id}: every recorded route is degenerate")
+
+
+@pytest.mark.parametrize("label,relpath,attr", DRIVERS)
+def test_replay_two_concurrent_rollouts(label, relpath, attr):
+    """Real streams, eval topology: 2 concurrent rollouts, bit-identical."""
+    rolls = _require_replays(2)[:2]
+    solo = {r.uuid: run_solo(relpath, attr, r) for r in rolls}
+    conc = run_interleaved(relpath, attr, rolls, round_robin(rolls))
+    for r in rolls:
+        assert conc[r.uuid] == solo[r.uuid], (
+            f"{label}: REAL stream {r.scene_id} diverged under concurrency")
+
+
+@pytest.mark.parametrize("label,relpath,attr", DRIVERS)
+def test_replay_randomized_interleavings(label, relpath, attr):
+    """Real streams under >=100 randomized interleavings."""
+    n_trials = int(os.environ.get("ISO_REPLAY_INTERLEAVINGS", "100"))
+    rolls = _require_replays(2)[:4]
+    solo = {r.uuid: run_solo(relpath, attr, r) for r in rolls}
+    for trial in range(n_trials):
+        rng = random.Random(4000 + trial)
+        conc = run_interleaved(relpath, attr, rolls, interleaving(rolls, rng))
+        for r in rolls:
+            assert conc[r.uuid] == solo[r.uuid], (
+                f"{label}: REAL stream {r.scene_id} diverged on trial {trial}")
+
+
+@pytest.mark.parametrize("label,relpath,attr", DRIVERS)
+def test_replay_mixed_with_synthetic(label, relpath, attr):
+    """Real streams sharing a process with the adversarial synthetic profiles.
+
+    This is the combination the eval can actually produce: a well-behaved real
+    rollout co-resident with one whose route is falling apart.
+    """
+    rolls = _require_replays(1)[:2] + [
+        Rollout("synthetic-flap", "flapping", seed=77, n_steps=8),
+        Rollout("synthetic-degen", "degenerate", seed=78, n_steps=8),
+    ]
+    solo = {r.uuid: run_solo(relpath, attr, r) for r in rolls}
+    conc = run_interleaved(relpath, attr, rolls, round_robin(rolls))
+    for r in rolls:
+        assert conc[r.uuid] == solo[r.uuid], (
+            f"{label}: {r.profile} diverged in a mixed real/synthetic process")
+
+
+@pytest.mark.parametrize("label,relpath,attr", DRIVERS)
+def test_replay_threaded(label, relpath, attr):
+    """Real streams under real thread contention."""
+    rolls = _require_replays(2)[:4]
+    solo = {r.uuid: run_solo(relpath, attr, r) for r in rolls}
+    servicer, _ = make_servicer(relpath, attr, alias_suffix="_replaythread")
+    results, errors = {}, []
+    barrier = threading.Barrier(len(rolls))
+
+    def worker(r):
+        ctx = Ctx()
+        out = []
+        try:
+            barrier.wait()
+            for rpc, req in r.calls():
+                resp = dispatch(servicer, rpc, req, ctx)
+                if rpc == "drive":
+                    out.append(canon(resp.trajectory))
+            results[r.uuid] = out
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(r,)) for r in rolls]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, f"{label}: exception on real streams: {errors[:1]}"
+    for r in rolls:
+        assert results[r.uuid] == solo[r.uuid], (
+            f"{label}: REAL stream {r.scene_id} diverged under threads")
+
+
+# ---------------------------------------------------------------------------
 # 7. TESTS -- isolation
 # ---------------------------------------------------------------------------
 

@@ -16,6 +16,11 @@ the confidence EMA the brief called out as the top risk. Across 4 drivers, 2- an
 contention, every rollout's trajectory sequence was **bit-identical** to running
 that rollout alone.
 
+**The claim now holds on REAL streams, not only synthetic ones.** §8 replays the
+actual RPC messages recorded in `rollout.asl` logs from scored runs — 10 scenes
+across 4 cities, including `dd162898`, the route-absent scene that produced the
+rear-end collision this project already diagnosed. Bit-identical there too.
+
 I did find one real defect on the Drive path, in a different failure mode:
 
 > **`drive()` could raise out of the RPC handler.** It resolved the session via
@@ -40,8 +45,11 @@ reasoning below: the process-wide `RLock` held across `_plan()`, and the trainin
 2. **Dev-only state guard** (`RF_STATE_GUARD=1`, default off) — snapshots module-level
    mutables at first session, asserts they never change, and rejects re-use of a live
    `session_uuid`.
-3. **`tests/test_state_isolation.py`** — 52 tests. Runs locally, CPU-only, no
+3. **`tests/test_state_isolation.py`** — 69 tests. Runs locally, CPU-only, no
    simulator, no renderer, model forward stubbed.
+4. **`tests/extract_replay_streams.py` + `tests/data/replay/`** — replay path
+   feeding real recorded `rollout.asl` streams through the same bit-identity
+   check (§8).
 
 **The fix is behaviour-preserving.** 60 trajectories per driver over 6 rollouts
 (including degenerate and route-flapping profiles) are bit-identical pre- vs
@@ -54,7 +62,7 @@ post-fix, so the rank-1 baseline is untouched.
 | `self._lock` held across the whole `_plan()` serializes the 2 concurrent rollouts | low | Correctness-safe (it's what *guarantees* isolation under threads). Costs latency, not accuracy: 2.58 ms mean Drive vs a 100 ms budget — ~39× headroom even fully serialized. Narrowing the critical section would trade proven safety for headroom we don't need. |
 | `rl/policy_driver.py` has real shared-mutable state (global torch RNG) | none in prod | Training-only; never containerized. Would be a blocker if it ever ships — see §4. |
 | Harness drives the servicer directly, not through a real gRPC channel | low | The grpc layer adds a thread pool, which the threaded test already models. It does not add shared driver state. |
-| Isolation verified against *my* observation model, not recorded traffic | medium | Profiles are adversarial by construction (degenerate/flapping routes drive the EMA far from 1.0), but they are synthetic. Replaying real `rollout.asl` streams would be strictly stronger. |
+| ~~Isolation verified against *my* observation model, not recorded traffic~~ | ~~medium~~ → **low** | **Closed** by the replay path (§8). Real recorded streams from 10 scenes now run through the same bit-identity check. Residual: 10 scenes is a sample, and all available logs came from route-follower runs, so no recorded stream exercises a driver that brakes hard. |
 
 ---
 
@@ -209,7 +217,7 @@ contamination hypothesis was disproved; this was a separate contract bug.
 
 ```
 ....................................................                     [100%]
-52 passed, 2 warnings in 22.79s
+69 passed, 2 warnings in 75.12s   (52 before the replay path was added)
 ```
 
 With the dev guard on:
@@ -286,6 +294,91 @@ Recorded here so the choice is visible rather than implicit.
 
 ---
 
+## 8. Replay on real recorded streams
+
+The synthetic profiles in §7 are adversarial by construction, but they encode
+*my* model of what the runtime sends. This closes that gap.
+
+### Where the streams come from
+
+`rollout.asl` logs record the actual messages the driver received during scored
+runs. Each `LogEntry` carries exactly the RPCs under audit:
+
+| `.asl` field | egodriver RPC |
+|---|---|
+| `driver_session_request` | `start_session` |
+| `driver_ego_trajectory` | `submit_egomotion_observation` |
+| `route_request` | `submit_route` |
+| `driver_request` | `drive` |
+| `driver_camera_image` | `submit_image_observation` (dropped — the follower family ignores cameras) |
+
+`tests/extract_replay_streams.py` reads those logs once and writes a compact
+JSON per rollout (poses, routes, drive timestamps; no image bytes). The tests
+then replay from that cache with **no SDK dependency and no GPU** — the reader
+itself needs the SDK env and ~5–10 s per rollout, which is why it is a one-shot
+cache-builder rather than something the suite runs.
+
+```bash
+cd ~/alpasim
+./.venv/bin/python ~/alpasim-challenge/tests/extract_replay_streams.py \
+    --out ~/alpasim-challenge/tests/data/replay --limit 10 --max-drives 12
+```
+
+### What was extracted
+
+```
+167 logs / 30 scenes -> extracting 10 across 9 route groups
+  2021.05.25.14.16.10_veh-35_01100_01664-f02b15cc2   drives=10 ego=10 route=10
+  2021.05.25.14.16.10_veh-35_01690_02183-0c77bbb19   drives=10 ego=10 route=10
+  2021.05.25.14.16.10_veh-35_01690_02183-2cd1545c4   drives=10 ego=10 route=10
+  2021.06.03.13.55.17_veh-35_02866_03582-9b58f5bd4   drives=10 ego=10 route=10
+  2021.06.28.16.57.59_veh-26_00016_00484-bbb7e4525   drives=10 ego=10 route=10
+  2021.08.16.14.23.37_veh-45_00015_00132-5fadffd02   drives=10 ego=10 route=10
+  2021.09.09.18.04.06_veh-40_00743_01071-6d2b59f78   drives=10 ego=10 route=10
+  2021.09.16.14.39.34_veh-42_00297_00935-c7a44a2e5   drives=10 ego=10 route=10
+  2021.09.16.15.47.30_veh-45_01199_01391-dd162898e   drives=10 ego=10 route=10
+  2021.10.06.07.26.10_veh-52_01245_02064-24817ec41   drives=10 ego=10 route=10
+```
+
+10 scenes, 9 distinct route groups, 4 cities (Las Vegas, Boston, Pittsburgh,
+Singapore). 89 KiB total, committed as a fixture.
+
+Sampling detail worth recording: the first extraction took the first 10 scenes
+alphabetically and got 8 rollouts from **two** route groups of a single drive
+log — nearly worthless as independent evidence. The extractor now strides across
+the available scenes. If you rebuild the cache, keep the stride.
+
+**`dd162898` is deliberately in the set.** That is the route-absent scene named
+in `driver/abstention_driver.py`'s own docstring as the one that produced a
+rear-end collision (1 waypoint → `straight()` → charge). It is the most
+degenerate real input we have on disk, and it now runs concurrently against
+healthy rollouts in the isolation check.
+
+### Replay tests (all parametrized over the 4 numpy drivers)
+
+| Test | What it adds over the synthetic set |
+|---|---|
+| `test_replay_streams_are_real_and_nondegenerate` | Guards the fixture: real drives/ego/route counts, at least one usable route |
+| `test_replay_two_concurrent_rollouts` | Eval topology on real streams |
+| `test_replay_randomized_interleavings` | 100 randomized interleavings on real streams |
+| `test_replay_mixed_with_synthetic` | **A real rollout co-resident with a synthetic flapping/degenerate one** — the mix the eval can actually produce |
+| `test_replay_threaded` | Real streams under real thread contention |
+
+All bit-identical to solo execution. The tests `pytest.skip` cleanly when the
+cache is absent, so the suite still runs in a bare checkout.
+
+### What this does and does not prove
+
+It proves the isolation claim holds on real nuPlan route geometry, real ego
+motion and the real Drive cadence — not just on my synthesis of them.
+
+It does **not** cover every scene: 10 of 12,146, and every available `.asl` came
+from route-follower runs, so no recorded stream shows a driver that brakes hard
+or abstains. If a future driver changes the ego trajectory materially, its own
+logs should be re-extracted rather than reusing these.
+
+---
+
 ## 6. Test inventory — `tests/test_state_isolation.py`
 
 Runs with `~/alpasim/.venv-driver/bin/python -m pytest tests/test_state_isolation.py -q`.
@@ -311,7 +404,13 @@ importable and falls back to an in-process stub otherwise, so it runs in a bare 
 | `test_per_session_rng_is_isolated_under_interleaving` | Per-session generator fix holds over 100 interleavings |
 | `test_session_lookup_is_constant_time` | Keying stays O(1) at 10k sessions |
 
-Each of the first 11 is parametrized over all four numpy drivers → 52 tests.
+Plus the five replay tests from §8. Most are parametrized over all four numpy
+drivers → **69 tests**:
+
+```
+$ ~/alpasim/.venv-driver/bin/python -m pytest tests/test_state_isolation.py -q
+69 passed, 2 warnings in 75.12s (0:01:15)
+```
 
 ### Why a leak would have been caught
 
