@@ -552,13 +552,18 @@ def test_pose_buffer_is_bounded(label, relpath, attr):
 # ---------------------------------------------------------------------------
 
 _IMMUTABLE = (int, float, bool, str, bytes, type(None), tuple, frozenset)
+# The dev guard's own bookkeeping is module-level and mutable BY DESIGN; it is
+# only populated when RF_STATE_GUARD=1 and is never read on the driving path.
+_GUARD_OWN_STATE = {"_GUARD_BASELINE", "_GUARD_SEEN"}
 
 
 def _module_mutable_snapshot(mod):
-    """id() of every module-level object that is NOT obviously immutable."""
+    """Every module-level object that is NOT obviously immutable."""
     snap = {}
     for name, val in vars(mod).items():
-        if name.startswith("__") or isinstance(val, _IMMUTABLE):
+        if name.startswith("__") or name in _GUARD_OWN_STATE:
+            continue
+        if isinstance(val, _IMMUTABLE):
             continue
         if isinstance(val, types.ModuleType) or callable(val):
             continue
@@ -581,6 +586,58 @@ def test_no_module_level_mutable_written_on_drive_path(label, relpath, attr):
     assert before == after, (
         f"{label}: module-level mutable state changed across the Drive path: "
         f"{[(k, before.get(k), after.get(k)) for k in changed]}")
+
+
+@pytest.mark.parametrize("label,relpath,attr", DRIVERS)
+def test_dev_guard_detects_a_planted_module_level_write(label, relpath, attr):
+    """Positive control: the RF_STATE_GUARD guard must FIRE on a real leak.
+
+    A guard that can only pass is worthless. Plant a module-level mutable, run
+    the guard, and require it to raise.
+    """
+    servicer, mod = make_servicer(relpath, attr, alias_suffix="_guardfire")
+    if not hasattr(mod, "_guard_check"):
+        pytest.skip(f"{label} has no dev guard")
+    mod.STATE_GUARD = True
+    mod._GUARD_BASELINE.clear()
+    mod._GUARD_SEEN.clear()
+    ctx = Ctx()
+    mod._guard_new_session("baseline-session")  # snapshots the clean baseline
+    mod.LEAKED_SHARED_CACHE = {"rollout-a": [1, 2, 3]}  # the planted leak
+    try:
+        with pytest.raises(AssertionError, match="module-level mutable"):
+            mod._guard_check("test")
+    finally:
+        del mod.LEAKED_SHARED_CACHE
+        mod.STATE_GUARD = False
+
+
+@pytest.mark.parametrize("label,relpath,attr", DRIVERS)
+def test_dev_guard_rejects_session_id_reuse(label, relpath, attr):
+    """A repeated session_uuid means state from the previous rollout may persist."""
+    servicer, mod = make_servicer(relpath, attr, alias_suffix="_guardreuse")
+    if not hasattr(mod, "_guard_new_session"):
+        pytest.skip(f"{label} has no dev guard")
+    mod.STATE_GUARD = True
+    mod._GUARD_BASELINE.clear()
+    mod._GUARD_SEEN.clear()
+    ctx = Ctx()
+    try:
+        servicer.start_session(NS(session_uuid="dup", random_seed=1), ctx)
+        with pytest.raises(AssertionError, match="re-initialised"):
+            servicer.start_session(NS(session_uuid="dup", random_seed=1), ctx)
+    finally:
+        mod.STATE_GUARD = False
+
+
+def test_dev_guard_is_off_by_default():
+    """Zero cost in prod: the guard must default to disabled."""
+    if os.environ.get("RF_STATE_GUARD"):
+        pytest.skip("RF_STATE_GUARD set in this environment; default not observable")
+    for label, relpath, attr in DRIVERS:
+        _, mod = make_servicer(relpath, attr, alias_suffix="_guardoff")
+        if hasattr(mod, "STATE_GUARD"):
+            assert mod.STATE_GUARD is False, f"{label}: RF_STATE_GUARD defaults on"
 
 
 # ---------------------------------------------------------------------------

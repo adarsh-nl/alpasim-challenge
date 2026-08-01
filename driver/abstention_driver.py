@@ -46,6 +46,43 @@ ABSTAIN = os.environ.get("RF_ABSTAIN", "1") == "1"
 FLOOR = float(os.environ.get("RF_ABSTAIN_FLOOR", "0.15"))
 ROUTE_HORIZON = float(os.environ.get("RF_ABSTAIN_HORIZON", "15.0"))
 
+# --- dev-only cross-rollout state guard (see driver/route_follower.py) -------
+# Especially relevant here: the confidence EMA (conf_ema, last_route_len) is
+# recursive state. If it ever migrated to module scope it would silently couple
+# both rollouts in this process -- a flapping route on one would throttle the
+# other. The guard fails loudly in dev if that ever happens.
+STATE_GUARD = os.environ.get("RF_STATE_GUARD", "0") == "1"
+_GUARD_BASELINE: dict[str, str] = {}
+_GUARD_SEEN: set[str] = set()
+
+
+def _guard_snapshot() -> dict[str, str]:
+    import types as _types
+    immutable = (int, float, bool, str, bytes, tuple, frozenset, type(None))
+    return {k: repr(v) for k, v in globals().items()
+            if not k.startswith("_") and not isinstance(v, immutable)
+            and not isinstance(v, _types.ModuleType) and not callable(v)}
+
+
+def _guard_new_session(uuid: str) -> None:
+    if not STATE_GUARD:
+        return
+    if not _GUARD_BASELINE:
+        _GUARD_BASELINE.update(_guard_snapshot())
+    if uuid in _GUARD_SEEN:
+        raise AssertionError(f"session {uuid} re-initialised: stale-state risk")
+    _GUARD_SEEN.add(uuid)
+
+
+def _guard_check(where: str) -> None:
+    if not STATE_GUARD:
+        return
+    now = _guard_snapshot()
+    if now != _GUARD_BASELINE:
+        bad = sorted(k for k in set(now) | set(_GUARD_BASELINE)
+                     if now.get(k) != _GUARD_BASELINE.get(k))
+        raise AssertionError(f"module-level mutable written at {where}: {bad}")
+
 
 def quat_rotate(q, v):
     qv = np.array([q.x, q.y, q.z], dtype=float)
@@ -142,7 +179,13 @@ class AbstentionDriver(egodriver_pb2_grpc.EgodriverServiceServicer):
             ctx.abort(grpc.StatusCode.NOT_FOUND, f"unknown session {uuid}")
         return s
 
+    def _sess_opt(self, uuid):
+        """Non-aborting lookup. Used by drive(), which must never raise."""
+        with self._lock:
+            return self._s.get(uuid)
+
     def start_session(self, req, ctx):
+        _guard_new_session(req.session_uuid)
         with self._lock:
             self._s[req.session_uuid] = Session()
         LOG.info("start %s (ABSTAIN=%s floor=%.2f)", req.session_uuid, ABSTAIN, FLOOR)
@@ -236,16 +279,22 @@ class AbstentionDriver(egodriver_pb2_grpc.EgodriverServiceServicer):
         return traj
 
     def drive(self, req, ctx):
-        s = self._sess(req.session_uuid, ctx)
+        # Drive must NEVER raise -- see driver/route_follower.py for the rationale.
+        s = self._sess_opt(req.session_uuid)
+        if s is None:
+            LOG.warning("drive for unknown/closed session %s -> empty plan",
+                        req.session_uuid)
+            return egodriver_pb2.DriveResponse(trajectory=common_pb2.Trajectory())
         try:
             with self._lock:
                 if s.latest is None:
                     raise RuntimeError("no ego pose yet")
                 traj = self._plan(s, req.time_now_us)
-            return egodriver_pb2.DriveResponse(trajectory=traj)
         except Exception:
             LOG.exception("drive failed -> safe fallback")
-            return egodriver_pb2.DriveResponse(trajectory=fallback(s, req.time_now_us))
+            traj = fallback(s, req.time_now_us)
+        _guard_check("drive")
+        return egodriver_pb2.DriveResponse(trajectory=traj)
 
     def get_version(self, req, ctx):
         return common_pb2.VersionId(version_id="abstention-driver", git_hash="local",
