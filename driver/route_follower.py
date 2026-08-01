@@ -28,6 +28,7 @@ A_LAT_MAX = float(os.environ.get("RF_A_LAT", "2.5"))    # m/s^2 lateral
 A_LON_MAX = float(os.environ.get("RF_A_LON", "1.5"))    # m/s^2 accel
 TAU_CONVERGE = 1.5                                      # s, lateral re-centering
 HORIZON_S, DT_US = 5.0, 100_000
+MAX_TOMBSTONES = 8                                      # closed-session stop states
 
 
 def quat_rotate(q: common_pb2.Quat, v: np.ndarray) -> np.ndarray:
@@ -88,6 +89,10 @@ def resample(pts: np.ndarray, step: float = 0.5) -> tuple[np.ndarray, np.ndarray
 class RouteFollower(egodriver_pb2_grpc.EgodriverServiceServicer):
     def __init__(self) -> None:
         self._s: dict[str, Session] = {}
+        # Tombstones: last known pose+speed of recently closed sessions, so a
+        # late Drive can still be answered with a real stopping trajectory
+        # rather than silence. Bounded; holds no route or pose history.
+        self._closed: dict[str, Session] = {}
         self._lock = threading.RLock()
         self._server: grpc.Server | None = None
 
@@ -95,21 +100,45 @@ class RouteFollower(egodriver_pb2_grpc.EgodriverServiceServicer):
         self._server = s
 
     def _sess(self, uuid: str, ctx) -> Session:
+        """Aborting lookup for the OBSERVATION RPCs.
+
+        NOT_FOUND on an unknown session is correct protocol signalling there and
+        is deliberately preserved. The Drive path must not use this -- see
+        _sess_opt().
+        """
         with self._lock:
             s = self._s.get(uuid)
         if s is None:
             ctx.abort(grpc.StatusCode.NOT_FOUND, f"unknown session {uuid}")
         return s
 
+    def _sess_opt(self, uuid: str) -> tuple[Session | None, bool]:
+        """Non-aborting lookup for the Drive path. Returns (session, is_live)."""
+        with self._lock:
+            s = self._s.get(uuid)
+            if s is not None:
+                return s, True
+            return self._closed.get(uuid), False
+
     def start_session(self, req, ctx):
         with self._lock:
             self._s[req.session_uuid] = Session()
+            self._closed.pop(req.session_uuid, None)
         LOG.info("start %s", req.session_uuid)
         return common_pb2.SessionRequestStatus()
 
     def close_session(self, req, ctx):
         with self._lock:
-            self._s.pop(req.session_uuid, None)
+            s = self._s.pop(req.session_uuid, None)
+            if s is not None and s.latest is not None:
+                # Keep only what a stopping trajectory needs (last pose, speed).
+                # Route, pose ring and last_plan are dropped -- eviction still
+                # frees essentially all of the per-rollout footprint.
+                ghost = Session()
+                ghost.latest, ghost.speed = s.latest, s.speed
+                self._closed[req.session_uuid] = ghost
+                while len(self._closed) > MAX_TOMBSTONES:
+                    self._closed.pop(next(iter(self._closed)))
         return common_pb2.Empty()
 
     def submit_image_observation(self, req, ctx):
@@ -196,7 +225,17 @@ class RouteFollower(egodriver_pb2_grpc.EgodriverServiceServicer):
         return traj
 
     def drive(self, req, ctx):
-        s = self._sess(req.session_uuid, ctx)
+        # Drive must NEVER raise. The previous version resolved the session with
+        # _sess(), which calls ctx.abort() -> raises OUT of the handler, so a
+        # Drive for an unknown or already-closed session produced no trajectory
+        # at all. A dead Drive handler is a scored zero; this path is now always
+        # answered with a decelerating stop.
+        s, live = self._sess_opt(req.session_uuid)
+        if not live:
+            LOG.warning("drive on non-live session %s -> stopping trajectory",
+                        req.session_uuid)
+            return egodriver_pb2.DriveResponse(
+                trajectory=fallback(s, req.time_now_us))
         try:
             with self._lock:
                 if s.latest is None:
@@ -235,9 +274,16 @@ def straight(p0, yaw, t0, v) -> common_pb2.Trajectory:
     return tr
 
 
-def fallback(s: Session, t0: int) -> common_pb2.Trajectory:
-    """Decelerate along current heading. Never throw."""
-    if s.latest is None:
+def fallback(s: Session | None, t0: int) -> common_pb2.Trajectory:
+    """Decelerate to a full stop along the last known heading. Never throws.
+
+    s is None (or has no pose) only when we have never received an ego pose for
+    this session -- we do not know where the car is, so there is no pose we can
+    honestly emit. Inventing one (e.g. the origin) would command a teleport, so
+    the empty trajectory is the correct answer there and the controller keeps
+    its previous plan.
+    """
+    if s is None or s.latest is None:
         return common_pb2.Trajectory()
     p = s.latest.pose
     p0 = np.array([p.vec.x, p.vec.y, p.vec.z])
