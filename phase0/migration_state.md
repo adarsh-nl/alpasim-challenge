@@ -45,3 +45,46 @@ Root cause: organizer-side runner ran out of disk space. Not our image.
    the free rerun scores against the migrated scenes.
 
 **Do not spend a fresh submission slot until migration is confirmed live.**
+
+---
+
+## Update 2026-09-15, after authentication
+
+Still **NOT CONFIRMED live.** Nothing in the authenticated API output speaks to
+the scene migration. What it does tell us:
+
+```
+Competition: AlpaSim Challenge 2026
+Status: OPEN
+Team: na-la
+Monthly submission limit: 3
+Submitted this month: 0
+Remaining this month: 3
+```
+
+### Quota: 3 slots available — but the promised remediation did NOT happen
+
+`submissions --track nuplan` reports `count: 2` — **both** July submissions are
+still on record, including the failed one:
+
+| Created | Status | Note |
+|---|---|---|
+| 2026-07-15 | `SUCCEEDED`, score 0.98048 | the rank-1 / rerun target |
+| 2026-07-18 | `DIRECT_P5_COMMAND_FAILED` | our `9f49b1ac`; `aws s3 sync` of `s3://alpasim-scene-data-use1/nuplan/worldengine/` failed |
+
+The organizer promised to *"rerun all the successful submissions/remove the
+records of the older submissions so that the usage count is removed."* The
+records were **not** removed. In practice this costs us nothing right now —
+`remaining_monthly_submissions: 3` because the monthly counter reset with the new
+month — but it means that part of the remediation was never carried out, and we
+should not assume the rerun half of the same promise was either.
+
+### Standing recommendation, unchanged
+
+Confirm the final-scene migration is live before spending a fresh slot. Best
+route now is simply to ask the organizers on issue #122 or the Challenge Page,
+since the API does not expose it. Two specific questions worth asking:
+
+1. Is the migration to the final nuPlan scenes live?
+2. Has the free rerun of our top soft-open submission (`1bb06e8b`) been queued or
+   completed? Nothing in `submissions` shows a rerun record.
