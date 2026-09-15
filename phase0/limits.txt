@@ -1,0 +1,6 @@
+Competition: AlpaSim Challenge 2026
+Status: OPEN
+Team: na-la
+Monthly submission limit: 3
+Submitted this month: 0
+Remaining this month: 3

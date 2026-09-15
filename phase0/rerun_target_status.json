@@ -1,0 +1,30 @@
+{
+  "competition_id": "alpasim-end2end-2026",
+  "controller_gains": null,
+  "created_at": "2026-07-15T13:20:24+00:00",
+  "evaluation_completed_at": "2026-07-15T14:03:19+00:00",
+  "evaluation_started_at": "2026-07-15T13:22:57+00:00",
+  "failure_code": null,
+  "failure_diagnostics": null,
+  "failure_reason": null,
+  "grace_submission": false,
+  "image_digest": "sha256:75e9090a45af58095d87630f8b1f0707d28b638d2e7a0138508a0a95827eee0c",
+  "image_size_bytes": 99022867,
+  "image_uri": "696254625193.dkr.ecr.us-east-1.amazonaws.com/teams/na-la:sub1",
+  "resolved_image_uri": "696254625193.dkr.ecr.us-east-1.amazonaws.com/teams/na-la@sha256:75e9090a45af58095d87630f8b1f0707d28b638d2e7a0138508a0a95827eee0c",
+  "rollout_coverage": null,
+  "score": 0.9804824187258063,
+  "status": "SUCCEEDED",
+  "submission_id": "1bb06e8b-9d20-4018-98e1-5ba612e4e44c",
+  "submitted_image_uri": "696254625193.dkr.ecr.us-east-1.amazonaws.com/teams/na-la:sub1",
+  "team_id": "na-la",
+  "throughput_limit": {
+    "limit_wall_time_s": 2485.438,
+    "margin_s": 328.277,
+    "observed_wall_time_s": 2157.161,
+    "passed": true,
+    "track": "nuplan"
+  },
+  "track": "nuplan",
+  "updated_at": "2026-07-15T14:03:19+00:00"
+}

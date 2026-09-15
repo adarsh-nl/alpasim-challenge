@@ -1,2 +1,2 @@
 submission_id	track	image_uri	git_commit	git_branch	driver	config	submitted_utc	result	note
-1bb06e8b-9d20-4018-98e1-5ba612e4e44c	nuplan	UNRECOVERABLE	7c5265e	main	submission/route_follower.py	RF_V_MAX=20 RF_A_LON=6.0 RF_A_LAT=7.0	2026-07-15T13:21:21Z	RANK 1 cap=1750.56 at_fault_dist=3.36	soft-open; rerun target; URI never recorded
+1bb06e8b-9d20-4018-98e1-5ba612e4e44c	nuplan	696254625193.dkr.ecr.us-east-1.amazonaws.com/teams/na-la:sub1	7c5265e	main	submission/route_follower.py	RF_V_MAX=20 RF_A_LON=6.0 RF_A_LAT=7.0	2026-07-15T13:21:21Z	SUCCEEDED score=0.9804824187258063 (leaderboard cap=1750.56)	digest sha256:75e9090a45af58095d87630f8b1f0707d28b638d2e7a0138508a0a95827eee0c | image 94.4 MiB | throughput 2157.161s vs 2485.438s limit | soft-open rerun target

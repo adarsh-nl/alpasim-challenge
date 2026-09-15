@@ -1,0 +1,58 @@
+{
+  "competition_id": "alpasim-end2end-2026",
+  "count": 2,
+  "current_month_submission_count": 0,
+  "current_warmup_submission_count": null,
+  "monthly_submission_limit": 3,
+  "next_page_token": null,
+  "remaining_monthly_submissions": 3,
+  "remaining_warmup_submissions": null,
+  "submissions": [
+    {
+      "competition_id": "alpasim-end2end-2026",
+      "controller_gains": null,
+      "created_at": "2026-07-18T15:10:41+00:00",
+      "failure_code": "DIRECT_P5_COMMAND_FAILED",
+      "failure_diagnostics": null,
+      "failure_reason": "command failed (1): 'aws' 's3' 'sync' '--delete' 's3://alpasim-scene-data-use1/nuplan/worldengine/' '/mnt/alpasim-data/nuplan/worldengine/'; see /opt/dlami/nvme/alpasim-runs/9f49b1ac-c979-4759-8d63-9bccf4976221/runner-logs/sync-nuplan-data.log",
+      "grace_submission": false,
+      "image_uri": "696254625193.dkr.ecr.us-east-1.amazonaws.com/teams/na-la:v4policy",
+      "resolved_image_uri": "696254625193.dkr.ecr.us-east-1.amazonaws.com/teams/na-la@sha256:b6e1e2a55d0f324cc51ed084ff561d5728f6adfef469e5b10f2bb5020eb98030",
+      "score": null,
+      "status": "FAILED",
+      "submission_id": "9f49b1ac-c979-4759-8d63-9bccf4976221",
+      "team_id": "na-la",
+      "throughput_limit": null,
+      "track": "nuplan",
+      "updated_at": "2026-07-18T15:15:29+00:00"
+    },
+    {
+      "competition_id": "alpasim-end2end-2026",
+      "controller_gains": null,
+      "created_at": "2026-07-15T13:20:24+00:00",
+      "failure_code": null,
+      "failure_diagnostics": null,
+      "failure_reason": null,
+      "grace_submission": false,
+      "image_uri": "696254625193.dkr.ecr.us-east-1.amazonaws.com/teams/na-la:sub1",
+      "resolved_image_uri": "696254625193.dkr.ecr.us-east-1.amazonaws.com/teams/na-la@sha256:75e9090a45af58095d87630f8b1f0707d28b638d2e7a0138508a0a95827eee0c",
+      "score": 0.9804824187258063,
+      "status": "SUCCEEDED",
+      "submission_id": "1bb06e8b-9d20-4018-98e1-5ba612e4e44c",
+      "team_id": "na-la",
+      "throughput_limit": {
+        "limit_wall_time_s": 2485.438,
+        "margin_s": 328.277,
+        "observed_wall_time_s": 2157.161,
+        "passed": true,
+        "track": "nuplan"
+      },
+      "track": "nuplan",
+      "updated_at": "2026-07-15T14:03:19+00:00"
+    }
+  ],
+  "team_id": "na-la",
+  "track": "nuplan",
+  "warmup_submission_limit": null,
+  "warmup_submission_window_days": null
+}

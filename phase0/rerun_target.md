@@ -1,4 +1,4 @@
-# Rerun target — PARTIALLY CONFIRMED
+# Rerun target — CONFIRMED 2026-09-15
 
 ## Best candidate (from our own records, not yet API-confirmed)
 
@@ -9,8 +9,12 @@
 | Submitted | 2026-07-15 15:21 CEST | `submissions.log` |
 | Result | **RANK 1**, cap 1750.56, at_fault_dist 3.36 | `submissions.log` |
 | Driver | route-follower, `RF_V_MAX=20 RF_A_LON=6.0 RF_A_LAT=7.0` | `submissions.log`, matches `submission/Dockerfile` |
-| **ECR image URI / tag** | **UNKNOWN — not recorded anywhere in this repo** | grep for `ecr`/`696254625193`/`teams/`/`image_uri`/`docker tag` found nothing |
-| Still top-ranked? | **UNCONFIRMED** — no later submission in the log, but not API-verified | — |
+| **ECR image URI** | `696254625193.dkr.ecr.us-east-1.amazonaws.com/teams/na-la:sub1` | API `status` — **gap closed** |
+| **Image digest (immutable pin)** | `sha256:75e9090a45af58095d87630f8b1f0707d28b638d2e7a0138508a0a95827eee0c` | API `status` |
+| Image size | 99,022,867 B = 94.4 MiB (0.23% of the 40 GiB cap) | API `status` |
+| Evaluator score | `0.9804824187258063`, status `SUCCEEDED` | API `status` |
+| Throughput | 2157.161 s observed vs 2485.438 s limit, margin 328.277 s, passed | API `status` |
+| Still top-ranked? | only submission on record for the team; `submissions --track nuplan` captured | — |
 
 ## To confirm (needs auth)
 
