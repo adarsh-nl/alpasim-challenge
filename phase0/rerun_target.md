@@ -24,3 +24,22 @@ We never recorded the ECR image URI/tag for our only submission. The rerun
 this does not block the rerun -- but we cannot currently answer "which image is
 our rank-1 result?" from local records alone. Recommend logging the full image
 URI in `submissions.log` for every future submission.
+
+## Backfilling the URI once authenticated (Phase 1.5)
+
+`status <submission_id>` should return the image URI the organizers hold, so the
+gap is likely recoverable rather than lost:
+
+    python3 alpasim_challenge.py status 1bb06e8b-9d20-4018-98e1-5ba612e4e44c \
+      > phase0/rerun_target_status.json
+
+Then backfill the local record:
+
+    python3 tools/log_submission.py --update 1bb06e8b \
+      --image-uri <uri-from-that-json>
+
+The record is currently marked `UNRECOVERABLE` in `submissions.tsv` only because
+we cannot read it without auth -- not because it is known to be gone.
+
+`tools/log_submission.py --audit` is the pre-submission check: it refuses to
+record any NEW submission without an image URI, so this gap cannot recur.

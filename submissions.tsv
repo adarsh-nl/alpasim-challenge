@@ -1,0 +1,2 @@
+submission_id	track	image_uri	git_commit	git_branch	driver	config	submitted_utc	result	note
+1bb06e8b-9d20-4018-98e1-5ba612e4e44c	nuplan	UNRECOVERABLE	7c5265e	main	submission/route_follower.py	RF_V_MAX=20 RF_A_LON=6.0 RF_A_LAT=7.0	2026-07-15T13:21:21Z	RANK 1 cap=1750.56 at_fault_dist=3.36	soft-open; rerun target; URI never recorded
