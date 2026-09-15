@@ -50,6 +50,31 @@ CKPT = os.environ.get("RL_POLICY_CKPT", "")
 
 _DEV = "cuda" if torch.cuda.is_available() else "cpu"
 
+# --- per-call decode budget -------------------------------------------------
+# The enforced constraint is an aggregate per-track wall-time budget, not the
+# advertised 0.1 s per-call target. At full navtest that works out to ~35 ms of
+# driver time per Drive call (reports/throughput_budget.md). Decode alone used
+# to consume 37.9 ms of it -- i.e. this driver would have breached the budget on
+# its own if it were ever promoted to the shipped path.
+#
+# This guard exists so that cannot happen silently. It WARNS rather than raises:
+# a driver that dies on a slow decode would trade a budget overrun for a dead
+# handler, which is strictly worse (a dead handler is a zero; an overrun is not
+# -- a slow Drive burns aggregate time, it does not zero its route).
+DECODE_BUDGET_MS = float(os.environ.get("RL_DECODE_BUDGET_MS", "35.0"))
+_decode_over_budget = 0
+
+
+def _check_decode_budget(ms: float) -> None:
+    global _decode_over_budget
+    if ms > DECODE_BUDGET_MS:
+        _decode_over_budget += 1
+        if _decode_over_budget <= 3 or _decode_over_budget % 100 == 0:
+            LOG.warning(
+                "image decode %.1f ms exceeds the %.1f ms per-call budget "
+                "(occurrence %d) -- this driver must not ship in this state",
+                ms, DECODE_BUDGET_MS, _decode_over_budget)
+
 
 def quat_rotate(q, v):
     qv = np.array([q.x, q.y, q.z], dtype=float)
@@ -148,19 +173,24 @@ class PolicyDriver(egodriver_pb2_grpc.EgodriverServiceServicer):
         # decode CAM_F0 -> (3,H,W) float tensor in [0,1], stash on session
         s = self._sess(req.session_uuid, ctx)
         try:
-            for f, _ in req.ListFields():
-                pass
-            ci = getattr(req, 'camera_image', None) or getattr(req, 'image', None)
-            cam = getattr(req, 'camera_image', None)
-            # req may wrap the image; try common shapes
-            img_bytes = None; logical = None
+            img_bytes = None
+            logical = None
             if hasattr(req, 'camera_image') and req.camera_image.image_bytes:
                 img_bytes = req.camera_image.image_bytes
                 logical = req.camera_image.logical_id
             if img_bytes and logical == 'CAM_F0':
-                im = Image.open(io.BytesIO(img_bytes)).convert('RGB').resize((IMG_HW[1], IMG_HW[0]))
+                t0 = time.perf_counter()
+                im = Image.open(io.BytesIO(img_bytes))
+                # draft() DCT-scales during JPEG decode. Measured on real eval
+                # wire bytes (1920x1080 q95, ~308 KiB): 37.9 ms naive -> 5.9 ms.
+                # The naive path alone exceeded the ~35 ms aggregate per-call
+                # allowance, so this is load-bearing, not a micro-optimisation.
+                # See reports/d2_wire_format_and_decode.md.
+                im.draft('RGB', (IMG_HW[1], IMG_HW[0]))
+                im = im.convert('RGB').resize((IMG_HW[1], IMG_HW[0]))
                 arr = np.asarray(im, dtype=np.float32) / 255.0     # H,W,3
-                s.last_img = torch.from_numpy(arr).permute(2,0,1).contiguous()  # 3,H,W
+                s.last_img = torch.from_numpy(arr).permute(2, 0, 1).contiguous()
+                _check_decode_budget((time.perf_counter() - t0) * 1000.0)
         except Exception:
             LOG.debug("img decode skipped", exc_info=True)
         return common_pb2.Empty()
