@@ -7,3 +7,14 @@ data/
 *.png
 __pycache__/
 .venv*/
+
+# Third-party teacher assets -- must NOT be committed.
+# rl/dp_repo has NO licence file (GitHub API reports license:None) and a
+# self-contradicting setup.py, so vendoring it into a repo we may open-source
+# under Apache-2.0 is a licence hazard independent of the Submission question.
+# See phase2/dp_license.md.
+rl/dp_repo/
+# 48 MB third-party weights (MIT, but not ours to redistribute)
+rl/dp_ckpt/
+# ~87 MB regenerable artifacts; rebuild via run_teacher.py
+rl/teacher_labels/
