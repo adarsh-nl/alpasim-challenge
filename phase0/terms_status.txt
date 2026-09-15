@@ -1,0 +1,13 @@
+Competition terms status -- NOT CAPTURED (BLOCKED)
+
+Requires: (1) a CLI build that has the `terms` subcommand (local one does not),
+          (2) authentication as the captain (Adarsh; gate G0.a).
+
+Populate with:
+    python3 alpasim_challenge.py terms status > phase0/terms_status.txt
+
+Expected fields, from the upstream CLI source (GET /terms/status):
+    terms_version, terms_sha256, actor_accepted, captain_accepted
+
+Note: actor_accepted and captain_accepted are distinct. The charter requires the
+registered CAPTAIN's acceptance, so the signed-in user must be adarshnanjaiya.
