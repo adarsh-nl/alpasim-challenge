@@ -1,0 +1,34 @@
+{
+  "n_files": 6080,
+  "n_ok": 6080,
+  "schema_errors": 0,
+  "unreadable": 0,
+  "unique_tokens": 6080,
+  "duplicates": 0,
+  "flag_rate": 0.0003289473684210526,
+  "flag_hist": {
+    "BACKWARDS": 2
+  },
+  "scenes": 760,
+  "cities": {
+    "boston": 1872,
+    "las_vegas": 2032,
+    "pittsburgh": 1216,
+    "singapore": 960
+  },
+  "ts_strides": [
+    5
+  ],
+  "ade": {
+    "n": 231,
+    "median": 0.5822880396778174,
+    "p90": 2.324712038743195,
+    "max": 7.6122905843852,
+    "median_at_1s": 0.3704319718227612,
+    "horizon_steps_median": 20,
+    "horizon_steps_max": 35,
+    "missing_gt": 69,
+    "min_gt_steps_required": 10
+  },
+  "verdict": "PASS"
+}
