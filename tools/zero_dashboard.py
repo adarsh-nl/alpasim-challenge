@@ -31,6 +31,8 @@ import statistics
 import sys
 from collections import Counter
 
+import numpy as np   # paired gate only; the single-run dashboard stays stdlib
+
 ZERO = 0.01
 
 
@@ -97,13 +99,166 @@ def bucket(r: dict) -> tuple[str, str]:
     return "clean", "gates passed, progress capped out"
 
 
+# ---------------------------------------------------------------------------
+# paired NEAR-MISS MARGIN gate
+# ---------------------------------------------------------------------------
+# Why this exists: the 200-scene set is saturated on score (198/200 == 1.000), so
+# a score gate returns INCONCLUSIVE for anything outside the 2 zeros. But
+# min_distance_to_obstacle_m still varies widely on PASSING scenes (0.02 m to
+# 9 m in that same sweep), and it is the axis the zeros live on -- both reached
+# 0.00 m. So margin is an informative signal where score is dead.
+#
+# The trap this guards against: margin is trivially bought by driving slower.
+# A driver that brakes everywhere improves every margin and is worse. So the
+# gate is a CONJUNCTION -- margin must improve on the scenes that are actually
+# tight, AND score/progress must not regress.
+
+TAIL_M = 1.0          # a scene is "tight" if baseline margin is below this
+MARGIN_FLOOR = 9.0    # metric is capped/absent above this; treat as "no obstacle"
+# Minimum margin gain worth calling a win. Without this the gate ships noise:
+# the gov-governor pair improved tight-scene margin by 0.002 m (2 mm) with
+# p=0.49 and was greenlit by an earlier version of this verdict. 5 cm is still
+# small but is at least physically meaningful next to a 2 m vehicle width.
+MIN_GAIN_M = 0.05
+
+
+def _bootstrap_ci(d, n_boot=10000, alpha=0.05, seed=0):
+    rng = np.random.default_rng(seed)
+    if len(d) == 0:
+        return (float("nan"), float("nan"))
+    m = np.array([rng.choice(d, len(d), replace=True).mean() for _ in range(n_boot)])
+    lo, hi = np.quantile(m, [alpha / 2, 1 - alpha / 2])
+    return float(lo), float(hi)
+
+
+def _perm_p(d, n_perm=10000, seed=0):
+    rng = np.random.default_rng(seed)
+    if len(d) == 0:
+        return float("nan")
+    obs = abs(float(np.mean(d)))
+    c = sum(1 for _ in range(n_perm)
+            if abs(float(np.mean(d * rng.choice([-1, 1], len(d))))) >= obs)
+    return (c + 1) / (n_perm + 1)
+
+
+def _by_scene(run_dir):
+    rollouts, _ = load_rollouts(run_dir)
+    out = {}
+    for r in rollouts:
+        sid = r.get("clipgt_id") or ""
+        out[sid] = {
+            "score": float(r.get("score", 0.0) or 0.0),
+            "prog": g(r, "progress_clipped_rel"),
+            "margin": g(r, "min_distance_to_obstacle_m", MARGIN_FLOOR),
+            "dist": g(r, "dist_traveled_m"),
+            "bucket": bucket(r)[0],
+        }
+    return out
+
+
+def paired_margin_gate(baseline_dir, candidate_dir, tol=0.02) -> int:
+    b, c = _by_scene(baseline_dir), _by_scene(candidate_dir)
+    shared = sorted(set(b) & set(c))
+    if not shared:
+        print("NO SHARED SCENES", file=sys.stderr)
+        return 1
+
+    print("=== PAIRED NEAR-MISS MARGIN GATE ===")
+    print(f"  baseline : {baseline_dir}")
+    print(f"  candidate: {candidate_dir}")
+    print(f"  shared scenes: {len(shared)}\n")
+
+    zb = sum(1 for s in shared if b[s]["score"] < ZERO)
+    zc = sum(1 for s in shared if c[s]["score"] < ZERO)
+    print(f"0. ZEROS (the primary bar)   baseline {zb}  ->  candidate {zc}"
+          f"   {'WORSE' if zc > zb else ('better' if zc < zb else 'unchanged')}")
+
+    mb = np.array([b[s]["margin"] for s in shared])
+    mc = np.array([c[s]["margin"] for s in shared])
+    dm = mc - mb
+    tight = mb < TAIL_M
+    print(f"\n1. MARGIN  min_distance_to_obstacle_m")
+    print(f"   all scenes      median {np.median(mb):5.2f} -> {np.median(mc):5.2f} m"
+          f"   (delta {np.median(dm):+.2f})")
+    print(f"   tight scenes (baseline < {TAIL_M} m): {int(tight.sum())}/{len(shared)}")
+    if tight.any():
+        dt_ = dm[tight]
+        lo, hi = _bootstrap_ci(dt_)
+        print(f"     margin on tight scenes: {mb[tight].mean():.2f} -> "
+              f"{mc[tight].mean():.2f} m   delta {dt_.mean():+.3f} m")
+        print(f"     95% CI [{lo:+.3f}, {hi:+.3f}]   p = {_perm_p(dt_):.4f}")
+    else:
+        print("     (no tight scenes -- this pair cannot exercise the margin gate)")
+
+    sb = np.array([b[s]["score"] for s in shared])
+    sc = np.array([c[s]["score"] for s in shared])
+    pb = np.array([b[s]["prog"] for s in shared])
+    pc = np.array([c[s]["prog"] for s in shared])
+    ds, dp = sc - sb, pc - pb
+    print(f"\n2. NON-REGRESSION GUARD (margin bought by braking must not pass)")
+    print(f"   score    {sb.mean():.4f} -> {sc.mean():.4f}   delta {ds.mean():+.4f}")
+    print(f"   progress {pb.mean():.4f} -> {pc.mean():.4f}   delta {dp.mean():+.4f}")
+    dd = np.array([c[s]["dist"] - b[s]["dist"] for s in shared])
+    print(f"   distance travelled delta: {dd.mean():+.2f} m "
+          f"({'slower' if dd.mean() < 0 else 'further'})")
+
+    gain = float(dm[tight].mean()) if tight.any() else 0.0
+    ci_lo = _bootstrap_ci(dm[tight])[0] if tight.any() else 0.0
+    # A win must be MATERIAL (>= MIN_GAIN_M) and RESOLVED (CI excludes zero).
+    # Either alone is not enough: a 2 mm gain can have a CI excluding zero and
+    # still be physically meaningless.
+    margin_up = bool(tight.any() and gain >= MIN_GAIN_M and ci_lo > 0)
+    margin_trivial = bool(tight.any() and 0 < gain < MIN_GAIN_M)
+    score_ok = bool(ds.mean() >= -tol)
+    prog_ok = bool(dp.mean() >= -tol)
+    # Braking is detectable even when the margin gain is trivial -- the tell is
+    # progress falling, not margin rising.
+    braking = bool(gain > 0 and (not prog_ok or dp.mean() < -tol / 2))
+
+    print(f"\n=== VERDICT (tolerance {tol}, min material gain {MIN_GAIN_M} m) ===")
+    if zc > zb:
+        print("   HOLD  candidate adds a zero. Nothing else matters.")
+    elif braking:
+        print("   HOLD  margin improved but progress regressed "
+              f"({dp.mean():+.4f}) -- this is margin bought by braking, "
+              "which is exactly what the guard exists to catch.")
+    elif margin_up and score_ok and prog_ok:
+        print("   SHIP-CANDIDATE  margin improved on tight scenes by "
+              f"{gain:+.3f} m (CI excludes 0) with no score/progress regression.")
+    elif margin_trivial:
+        print(f"   INCONCLUSIVE  tight-scene margin gain {gain:+.3f} m is below "
+              f"the {MIN_GAIN_M} m materiality floor -- statistically it may be "
+              f"real, physically it is noise next to a 2 m vehicle width.")
+    elif not tight.any():
+        print("   INCONCLUSIVE  no tight scenes in the shared set; the margin "
+              "signal is untested here. Use a scene set containing near-misses.")
+    else:
+        print("   INCONCLUSIVE  margin did not improve on tight scenes.")
+
+    print(f"\n   worst tight scenes (baseline margin ascending):")
+    for s in sorted(shared, key=lambda s: b[s]["margin"])[:6]:
+        print(f"     {b[s]['margin']:5.2f} -> {c[s]['margin']:5.2f} m   "
+              f"score {b[s]['score']:.2f} -> {c[s]['score']:.2f}   "
+              f"prog {b[s]['prog']:.2f} -> {c[s]['prog']:.2f}   {s[-34:]}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("run_dir")
+    ap.add_argument("run_dir", nargs="?")
+    ap.add_argument("--baseline", default="", help="paired margin gate: baseline run")
+    ap.add_argument("--candidate", default="", help="paired margin gate: candidate run")
+    ap.add_argument("--tol", type=float, default=0.02,
+                    help="score/progress non-regression tolerance")
     ap.add_argument("--near", type=float, default=0.8,
                     help="near-zero threshold (default 0.8)")
     ap.add_argument("--md", default="", help="also write a markdown report here")
     args = ap.parse_args()
+
+    if args.baseline and args.candidate:
+        return paired_margin_gate(args.baseline, args.candidate, args.tol)
+    if not args.run_dir:
+        ap.error("give a run_dir, or --baseline and --candidate")
 
     rollouts, criteria = load_rollouts(args.run_dir)
     if not rollouts:
